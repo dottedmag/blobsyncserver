@@ -204,29 +204,37 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		if next != height {
 			return heightMismatchError{}
 		}
-		length := make([]byte, 8)
+		idbin := make([]byte, 8)
+		sizebin := make([]byte, 8)
 		for {
-			_, err := io.ReadFull(r.Body, length)
+			_, err := io.ReadFull(r.Body, idbin)
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
+				return errors.Wrap(err, "unable to read object id")
+			}
+			id := binary.BigEndian.Uint64(idbin)
+			if id != next {
+				return heightMismatchError{}
+			}
+			_, err = io.ReadFull(r.Body, sizebin)
+			if err != nil {
 				return errors.Wrap(err, "unable to read object size")
 			}
-			size := binary.BigEndian.Uint64(length)
+			size := binary.BigEndian.Uint64(sizebin)
 			val := make([]byte, size)
 			_, err = io.ReadFull(r.Body, val)
 			if err != nil {
 				return errors.Wrap(err, "unable to read object")
 			}
-			id, _ := b.NextSequence()
-			// NextSequence() returns already-incremented sequence number, starting from 1
-			key := idToKey(id - 1)
-			err = b.Put(key, val)
+			err = b.Put(idbin, val)
 			if err != nil {
 				return errors.Wrap(err, "unable to store object")
 			}
+			next++
 		}
+		b.SetSequence(next)
 		return nil
 	})
 	if err != nil {
