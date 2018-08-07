@@ -175,20 +175,6 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *server) uploadChanges(id string) error {
-	ws, err := openWorkspace(s, id)
-	if err != nil {
-		return errors.Wrap(err, "unable to open workspace to upload changes")
-	}
-	err = ws.View(func(tx *bolt.Tx) error {
-		return nil
-	})
-	if err != nil {
-		return errors.Wrap(err, "unable to upload changes")
-	}
-	return nil
-}
-
 type heightMismatchError struct{}
 
 func (heightMismatchError) Error() string {
