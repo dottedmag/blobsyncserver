@@ -20,6 +20,7 @@ import (
 	"github.com/coreos/bbolt"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
+	"github.com/vmihailenco/msgpack"
 )
 
 type server struct {
@@ -45,8 +46,12 @@ func main() {
 
 	var r = mux.NewRouter()
 
+	r.HandleFunc("/workspaces/{id:[0-9a-f]{32}}/changes", srv.get2).Methods("GET").
+		Queries("from", "{height:[0-9]+}").Queries("mp", "true")
 	r.HandleFunc("/workspaces/{id:[0-9a-f]{32}}/changes", srv.get).Methods("GET").
 		Queries("from", "{height:[0-9]+}")
+	r.HandleFunc("/workspaces/{id:[0-9a-f]{32}}/changes", srv.post2).Methods("POST").
+		Queries("from", "{height:[0-9]+}").Queries("mp", "true")
 	r.HandleFunc("/workspaces/{id:[0-9a-f]{32}}/changes", srv.post).Methods("POST").
 		Queries("from", "{height:[0-9]+}")
 
@@ -160,6 +165,61 @@ func readUpdates(b *bolt.Bucket, from int64) []update {
 	return out
 }
 
+type update2 struct {
+	K int64
+	V []byte
+}
+
+type updates []update2
+
+func readUpdates2(b *bolt.Bucket, from int64) updates {
+	out := make(updates, 0, 64)
+	fromKey := int64ToWire(from)
+
+	c := b.Cursor()
+	for k, v := c.Seek(fromKey); k != nil; k, v = c.Next() {
+		out = append(out, update2{wireToInt64(k), v})
+	}
+	return out
+}
+
+func (s *server) get2(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	ws, err := openWorkspace(s, vars["id"])
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		// FIXME (dottedmag) do not show internals once in production
+		w.Write([]byte(err.Error()))
+		return
+	}
+	from, err := strToId(vars["height"])
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	err = ws.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("updates"))
+		if b == nil {
+			return errors.New("missing bucket 'updates'")
+		}
+
+		updates := readUpdates2(b, from)
+		e := msgpack.NewEncoder(w)
+		err = e.Encode(updates)
+		if err != nil {
+			return errors.Wrap(err, "failed to write")
+		}
+
+		return nil
+	})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		// FIXME (dottedmag) do not show internals once in production
+		w.Write([]byte(err.Error()))
+		return
+	}
+}
+
 func (s *server) get(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ws, err := openWorkspace(s, vars["id"])
@@ -220,6 +280,60 @@ func nextKey(b *bolt.Bucket) int64 {
 		return 1
 	}
 	return wireToInt64(k) + 1
+}
+
+func (s *server) post2(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	ws, err := openWorkspace(s, vars["id"])
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		// FIXME (dottedmag) do not show internals once in production
+		w.Write([]byte(err.Error()))
+		return
+	}
+	height, err := strToId(vars["height"])
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	d := msgpack.NewDecoder(r.Body)
+	var updates updates
+	err = d.Decode(&updates)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	err = ws.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("updates"))
+		if b == nil {
+			return errors.New("missing bucket 'updates'")
+		}
+		next := nextKey(b)
+		if next != height {
+			return heightMismatchError{}
+		}
+		for _, update := range updates {
+			if update.K != next {
+				return clientError("non-sequential id")
+			}
+			err = b.Put(int64ToWire(update.K), update.V)
+			next++
+		}
+		return nil
+	})
+	if err != nil {
+		switch err.(type) {
+		case heightMismatchError:
+			w.WriteHeader(http.StatusPreconditionFailed)
+		case clientError:
+			w.WriteHeader(http.StatusBadRequest)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		w.Write([]byte(err.Error()))
+		return
+	}
 }
 
 func (s *server) post(w http.ResponseWriter, r *http.Request) {
