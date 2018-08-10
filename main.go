@@ -115,7 +115,7 @@ func openWorkspace(server *server, id string) (*bolt.DB, error) {
 	return db, nil
 }
 
-func idToKey(id int64) []byte {
+func int64ToWire(id int64) []byte {
 	if id < 0 {
 		panic("Negative id")
 	}
@@ -124,7 +124,7 @@ func idToKey(id int64) []byte {
 	return k
 }
 
-func keyToId(k []byte) int64 {
+func wireToInt64(k []byte) int64 {
 	id := binary.BigEndian.Uint64(k)
 	if id > math.MaxInt64 {
 		panic("id does not fit int64")
@@ -151,7 +151,7 @@ type update struct {
 func readUpdates(b *bolt.Bucket, from int64) []update {
 	out := make([]update, 0, 64)
 
-	fromKey := idToKey(from)
+	fromKey := int64ToWire(from)
 
 	c := b.Cursor()
 	for k, v := c.Seek(fromKey); k != nil; k, v = c.Next() {
@@ -180,7 +180,10 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 			return errors.New("missing bucket 'updates'")
 		}
 
-		for _, update := range readUpdates(b, from) {
+		updates := readUpdates(b, from)
+		w.Write(int64ToWire(int64(len(updates))))
+
+		for _, update := range updates {
 			w.Write(update.key)
 			var ob [8]byte
 			binary.BigEndian.PutUint64(ob[:], uint64(len(update.value)))
@@ -204,13 +207,19 @@ func (heightMismatchError) Error() string {
 	return "height mismatch"
 }
 
+type clientError string
+
+func (s clientError) Error() string {
+	return string(s)
+}
+
 func nextKey(b *bolt.Bucket) int64 {
 	c := b.Cursor()
 	k, _ := c.Last()
 	if k == nil {
 		return 1
 	}
-	return keyToId(k) + 1
+	return wireToInt64(k) + 1
 }
 
 func (s *server) post(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +236,13 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	countBin := make([]byte, 8)
+	_, err = io.ReadFull(r.Body, countBin)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	count := wireToInt64(countBin)
 	err = ws.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("updates"))
 		if b == nil {
@@ -238,27 +254,32 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		}
 		idbin := make([]byte, 8)
 		sizebin := make([]byte, 8)
+		var nread int64 = 0
 		for {
 			_, err := io.ReadFull(r.Body, idbin)
 			if err == io.EOF {
 				break
 			}
+			nread++
 			if err != nil {
-				return errors.Wrap(err, "unable to read object id")
+				return clientError("unable to read object id: " +
+					err.Error())
 			}
-			id := keyToId(idbin)
+			id := wireToInt64(idbin)
 			if id != next {
-				return heightMismatchError{}
+				return clientError("non-sequential id")
 			}
 			_, err = io.ReadFull(r.Body, sizebin)
 			if err != nil {
-				return errors.Wrap(err, "unable to read object size")
+				return clientError("unable to read object size: " +
+					err.Error())
 			}
-			size := binary.BigEndian.Uint64(sizebin)
+			size := wireToInt64(sizebin)
 			val := make([]byte, size)
 			_, err = io.ReadFull(r.Body, val)
 			if err != nil {
-				return errors.Wrap(err, "unable to read object")
+				return clientError("unable to read object: " +
+					err.Error())
 			}
 			err = b.Put(idbin, val)
 			if err != nil {
@@ -266,16 +287,21 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 			}
 			next++
 		}
+		if nread != count {
+			return clientError("way too few objects")
+		}
 		return nil
 	})
 	if err != nil {
-		if _, ok := err.(heightMismatchError); ok {
+		switch err.(type) {
+		case heightMismatchError:
 			w.WriteHeader(http.StatusPreconditionFailed)
-		} else {
+		case clientError:
+			w.WriteHeader(http.StatusBadRequest)
+		default:
 			w.WriteHeader(http.StatusInternalServerError)
-			// FIXME (dottedmag) do not show internals once in production
-			w.Write([]byte(err.Error()))
 		}
+		w.Write([]byte(err.Error()))
 		return
 	}
 }
