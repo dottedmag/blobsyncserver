@@ -6,6 +6,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -114,10 +115,32 @@ func openWorkspace(server *server, id string) (*bolt.DB, error) {
 	return db, nil
 }
 
-func idToKey(id uint64) []byte {
+func idToKey(id int64) []byte {
+	if id < 0 {
+		panic("Negative id")
+	}
 	k := make([]byte, 8)
-	binary.BigEndian.PutUint64(k, id)
+	binary.BigEndian.PutUint64(k, uint64(id))
 	return k
+}
+
+func keyToId(k []byte) int64 {
+	id := binary.BigEndian.Uint64(k)
+	if id > math.MaxInt64 {
+		panic("id does not fit int64")
+	}
+	return int64(id)
+}
+
+func strToId(s string) (int64, error) {
+	i, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if i < 0 {
+		return 0, errors.New("Negative id")
+	}
+	return i, nil
 }
 
 type update struct {
@@ -125,7 +148,7 @@ type update struct {
 	value []byte
 }
 
-func readUpdates(b *bolt.Bucket, from uint64) []update {
+func readUpdates(b *bolt.Bucket, from int64) []update {
 	out := make([]update, 0, 64)
 
 	fromKey := idToKey(from)
@@ -146,7 +169,7 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(err.Error()))
 		return
 	}
-	from, err := strconv.ParseUint(vars["height"], 10, 64)
+	from, err := strToId(vars["height"])
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -181,6 +204,15 @@ func (heightMismatchError) Error() string {
 	return "height mismatch"
 }
 
+func nextKey(b *bolt.Bucket) int64 {
+	c := b.Cursor()
+	k, _ := c.Last()
+	if k == nil {
+		return 1
+	}
+	return keyToId(k) + 1
+}
+
 func (s *server) post(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ws, err := openWorkspace(s, vars["id"])
@@ -190,7 +222,7 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(err.Error()))
 		return
 	}
-	height, err := strconv.ParseUint(vars["height"], 10, 64)
+	height, err := strToId(vars["height"])
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -200,7 +232,7 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		if b == nil {
 			return errors.New("missing bucket 'updates'")
 		}
-		next := b.Sequence()
+		next := nextKey(b)
 		if next != height {
 			return heightMismatchError{}
 		}
@@ -214,7 +246,7 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return errors.Wrap(err, "unable to read object id")
 			}
-			id := binary.BigEndian.Uint64(idbin)
+			id := keyToId(idbin)
 			if id != next {
 				return heightMismatchError{}
 			}
@@ -234,7 +266,6 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 			}
 			next++
 		}
-		b.SetSequence(next)
 		return nil
 	})
 	if err != nil {
