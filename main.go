@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -122,7 +123,7 @@ func openWorkspace(server *server, id string) (*bolt.DB, error) {
 
 func int64ToWire(id int64) []byte {
 	if id < 0 {
-		panic("Negative id")
+		panic("id < 0")
 	}
 	k := make([]byte, 8)
 	binary.BigEndian.PutUint64(k, uint64(id))
@@ -142,8 +143,8 @@ func strToId(s string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if i < 0 {
-		return 0, errors.New("Negative id")
+	if i < 1 {
+		return 0, errors.New("id <= 0")
 	}
 	return i, nil
 }
@@ -203,6 +204,11 @@ func (s *server) get2(w http.ResponseWriter, r *http.Request) {
 			return errors.New("missing bucket 'updates'")
 		}
 
+		next := nextKey(b)
+		if from > next+1 {
+			return heightMismatchError{next - 1, true}
+		}
+
 		updates := readUpdates2(b, from)
 		e := msgpack.NewEncoder(w)
 		err = e.Encode(updates)
@@ -240,6 +246,11 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 			return errors.New("missing bucket 'updates'")
 		}
 
+		next := nextKey(b)
+		if from > next+1 {
+			return heightMismatchError{next - 1, true}
+		}
+
 		updates := readUpdates(b, from)
 		w.Write(int64ToWire(int64(len(updates))))
 
@@ -254,17 +265,21 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		// FIXME (dottedmag) do not show internals once in production
-		w.Write([]byte(err.Error()))
-		return
+		sendError(w, err)
 	}
 }
 
-type heightMismatchError struct{}
+type heightMismatchError struct {
+	height int64
+	trim   bool // whether client has provided a HIGHER height and needs to trim
+}
 
-func (heightMismatchError) Error() string {
-	return "height mismatch"
+func (e heightMismatchError) Error() string {
+	if e.trim {
+		return fmt.Sprintf("trim %d", e.height)
+	} else {
+		return fmt.Sprintf("conflict %d", e.height)
+	}
 }
 
 type clientError string
@@ -311,11 +326,11 @@ func (s *server) post2(w http.ResponseWriter, r *http.Request) {
 		}
 		next := nextKey(b)
 		if next != height {
-			return heightMismatchError{}
+			return heightMismatchError{next - 1, (height > next)}
 		}
-		for _, update := range updates {
+		for i, update := range updates {
 			if update.K != next {
-				return clientError("non-sequential id")
+				return clientError(fmt.Sprintf("non-sequential id %d, wanted %d in incoming change #%d", update.K, next, i+1))
 			}
 			err = b.Put(int64ToWire(update.K), update.V)
 			next++
@@ -323,16 +338,7 @@ func (s *server) post2(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		switch err.(type) {
-		case heightMismatchError:
-			w.WriteHeader(http.StatusPreconditionFailed)
-		case clientError:
-			w.WriteHeader(http.StatusBadRequest)
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-		w.Write([]byte(err.Error()))
-		return
+		sendError(w, err)
 	}
 }
 
@@ -364,7 +370,7 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		}
 		next := nextKey(b)
 		if next != height {
-			return heightMismatchError{}
+			return heightMismatchError{next - 1, (height > next)}
 		}
 		idbin := make([]byte, 8)
 		sizebin := make([]byte, 8)
@@ -381,7 +387,7 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 			}
 			id := wireToInt64(idbin)
 			if id != next {
-				return clientError("non-sequential id")
+				return clientError(fmt.Sprintf("non-sequential id %d, wanted %d in incoming change #%d", id, next, nread))
 			}
 			_, err = io.ReadFull(r.Body, sizebin)
 			if err != nil {
@@ -407,15 +413,25 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		switch err.(type) {
-		case heightMismatchError:
-			w.WriteHeader(http.StatusPreconditionFailed)
-		case clientError:
-			w.WriteHeader(http.StatusBadRequest)
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-		w.Write([]byte(err.Error()))
-		return
+		sendError(w, err)
 	}
+}
+
+func sendError(w http.ResponseWriter, err error) {
+	w.Header().Set("Content-Type", "text/wonderland.inbox.error; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	switch err := err.(type) {
+	case heightMismatchError:
+		w.WriteHeader(http.StatusPreconditionFailed)
+		w.Write([]byte(err.Error()))
+	case clientError:
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, "bad_request %s", err.Error())
+	default:
+		fmt.Fprintf(os.Stderr, "500: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("server_error"))
+	}
+	return
 }
