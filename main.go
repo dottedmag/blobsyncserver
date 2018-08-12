@@ -27,6 +27,7 @@ import (
 
 type server struct {
 	rootDir    string
+	store      *Store
 	workspaces map[string]*bolt.DB
 	mutex      sync.Mutex
 	dev        bool
@@ -44,12 +45,17 @@ func main() {
 	flag.BoolVar(&srv.dev, "dev", false, "Run in development mode")
 	flag.Parse()
 
+	srv.store = OpenStore(srv.rootDir)
+
 	shutdownChannel := make(chan bool)
 	stopChannel := make(chan os.Signal, 1)
 	signal.Notify(stopChannel, syscall.SIGINT, syscall.SIGTERM)
 
 	var r = mux.NewRouter()
 
+	if srv.dev {
+		r.HandleFunc("/workspaces", srv.adminListWorkspaces).Methods("GET")
+	}
 	r.HandleFunc("/workspaces/{id:[0-9a-f]{32}}/changes", srv.get2).Methods("GET").
 		Queries("from", "{height:[0-9]+}").Queries("mp", "true")
 	r.HandleFunc("/workspaces/{id:[0-9a-f]{32}}/changes", srv.get).Methods("GET").
