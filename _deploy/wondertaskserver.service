@@ -1,0 +1,15 @@
+# copy this into /etc/systemd/system/
+[Unit]
+Description=Software Wonderland Tasks Server
+After=network.target
+
+[Service]
+User=andreyvit
+Restart=always
+PIDFile=/var/run/wondertaskserver.pid
+Type=simple
+ExecStart=/usr/local/bin/wondertaskserver -dev -port 3033 -db /srv/wonderlandtasks/db
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
