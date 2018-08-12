@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/coreos/bbolt"
+	"github.com/go-http-utils/logger"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"github.com/vmihailenco/msgpack"
@@ -28,6 +29,7 @@ type server struct {
 	rootDir    string
 	workspaces map[string]*bolt.DB
 	mutex      sync.Mutex
+	dev        bool
 }
 
 func main() {
@@ -39,6 +41,7 @@ func main() {
 	var port int
 	flag.IntVar(&port, "port", 3003, "TCP port to listen on")
 	flag.StringVar(&srv.rootDir, "db", "/tmp/blobsyncserver", "Database root folder")
+	flag.BoolVar(&srv.dev, "dev", false, "Run in development mode")
 	flag.Parse()
 
 	shutdownChannel := make(chan bool)
@@ -56,7 +59,10 @@ func main() {
 	r.HandleFunc("/workspaces/{id:[0-9a-f]{32}}/changes", srv.post).Methods("POST").
 		Queries("from", "{height:[0-9]+}")
 
-	httpSrv := &http.Server{Addr: net.JoinHostPort("", strconv.Itoa(port)), Handler: r}
+	httpSrv := &http.Server{
+		Addr:    net.JoinHostPort("", strconv.Itoa(port)),
+		Handler: setupMiddleware(r, srv.dev),
+	}
 
 	go func() {
 		<-stopChannel
@@ -85,6 +91,17 @@ func main() {
 	}
 
 	<-shutdownChannel
+}
+
+func setupMiddleware(h http.Handler, dev bool) http.Handler {
+	if dev {
+		h = logger.Handler(h, os.Stderr, logger.DevLoggerType)
+	} else {
+		// TODO: do we want to use standard Apache-style logger like CommonLoggerType
+		// or CombineLoggerType? do we want to see IP addresses, privacy-wise?
+		h = logger.Handler(h, os.Stderr, logger.TinyLoggerType)
+	}
+	return h
 }
 
 func openWorkspace(server *server, id string) (*bolt.DB, error) {
@@ -265,7 +282,7 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		sendError(w, err)
+		s.sendError(w, err)
 	}
 }
 
@@ -301,9 +318,7 @@ func (s *server) post2(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ws, err := openWorkspace(s, vars["id"])
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		// FIXME (dottedmag) do not show internals once in production
-		w.Write([]byte(err.Error()))
+		s.sendError(w, err)
 		return
 	}
 	height, err := strToId(vars["height"])
@@ -338,7 +353,7 @@ func (s *server) post2(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		sendError(w, err)
+		s.sendError(w, err)
 	}
 }
 
@@ -346,9 +361,7 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ws, err := openWorkspace(s, vars["id"])
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		// FIXME (dottedmag) do not show internals once in production
-		w.Write([]byte(err.Error()))
+		s.sendError(w, err)
 		return
 	}
 	height, err := strToId(vars["height"])
@@ -413,11 +426,11 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		sendError(w, err)
+		s.sendError(w, err)
 	}
 }
 
-func sendError(w http.ResponseWriter, err error) {
+func (s *server) sendError(w http.ResponseWriter, err error) {
 	w.Header().Set("Content-Type", "text/wonderland.inbox.error; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
@@ -429,9 +442,12 @@ func sendError(w http.ResponseWriter, err error) {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintf(w, "bad_request %s", err.Error())
 	default:
-		fmt.Fprintf(os.Stderr, "500: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("server_error"))
+		if s.dev {
+			fmt.Fprintf(w, "server_error: %v", err)
+		} else {
+			w.Write([]byte("server_error"))
+		}
 	}
 	return
 }
