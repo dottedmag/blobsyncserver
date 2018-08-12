@@ -175,15 +175,13 @@ func (s *server) get2(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ws, err := s.store.openWorkspace(vars["id"])
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		// FIXME (dottedmag) do not show internals once in production
-		w.Write([]byte(err.Error()))
+		s.sendError(w, err)
 		return
 	}
 	defer s.store.releaseWorkspace(ws)
 	from, err := strToId(vars["height"])
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		s.sendError(w, clientError("invalid height"))
 		return
 	}
 	err = ws.DB.View(func(tx *bolt.Tx) error {
@@ -207,9 +205,7 @@ func (s *server) get2(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		// FIXME (dottedmag) do not show internals once in production
-		w.Write([]byte(err.Error()))
+		s.sendError(w, err)
 		return
 	}
 }
@@ -218,15 +214,13 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	ws, err := s.store.openWorkspace(vars["id"])
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		// FIXME (dottedmag) do not show internals once in production
-		w.Write([]byte(err.Error()))
+		s.sendError(w, err)
 		return
 	}
 	defer s.store.releaseWorkspace(ws)
 	from, err := strToId(vars["height"])
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		s.sendError(w, clientError("invalid height"))
 		return
 	}
 	err = ws.DB.View(func(tx *bolt.Tx) error {
@@ -295,15 +289,14 @@ func (s *server) post2(w http.ResponseWriter, r *http.Request) {
 	}
 	height, err := strToId(vars["height"])
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		s.sendError(w, clientError("invalid height"))
 		return
 	}
 	d := msgpack.NewDecoder(r.Body)
 	var updates updates
 	err = d.Decode(&updates)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(err.Error()))
+		s.sendError(w, clientError("invalid MsgPack message: "+err.Error()))
 		return
 	}
 	err = ws.DB.Update(func(tx *bolt.Tx) error {
@@ -339,13 +332,13 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 	defer s.store.releaseWorkspace(ws)
 	height, err := strToId(vars["height"])
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		s.sendError(w, clientError("invalid height"))
 		return
 	}
 	countBin := make([]byte, 8)
 	_, err = io.ReadFull(r.Body, countBin)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		s.sendError(w, clientError("invalid body (height missing)"))
 		return
 	}
 	count := wireToInt64(countBin)
