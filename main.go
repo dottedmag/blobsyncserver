@@ -50,7 +50,9 @@ func main() {
 	var r = mux.NewRouter()
 
 	if srv.dev {
+		// TODO: add an admin bearer token and allow in production
 		r.HandleFunc("/workspaces", srv.adminListWorkspaces).Methods("GET")
+		r.HandleFunc("/workspaces/{id:[0-9a-f]{32}}", srv.adminDeleteWorkspace).Methods("DELETE")
 	}
 	r.HandleFunc("/workspaces/{id:[0-9a-f]{32}}/changes", srv.get2).Methods("GET").
 		Queries("from", "{height:[0-9]+}").Queries("mp", "true")
@@ -178,12 +180,13 @@ func (s *server) get2(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(err.Error()))
 		return
 	}
+	defer s.store.releaseWorkspace(ws)
 	from, err := strToId(vars["height"])
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	err = ws.View(func(tx *bolt.Tx) error {
+	err = ws.DB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("updates"))
 		if b == nil {
 			return errors.New("missing bucket 'updates'")
@@ -220,12 +223,13 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(err.Error()))
 		return
 	}
+	defer s.store.releaseWorkspace(ws)
 	from, err := strToId(vars["height"])
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	err = ws.View(func(tx *bolt.Tx) error {
+	err = ws.DB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("updates"))
 		if b == nil {
 			return errors.New("missing bucket 'updates'")
@@ -302,7 +306,7 @@ func (s *server) post2(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(err.Error()))
 		return
 	}
-	err = ws.Update(func(tx *bolt.Tx) error {
+	err = ws.DB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("updates"))
 		if b == nil {
 			return errors.New("missing bucket 'updates'")
@@ -332,6 +336,7 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, err)
 		return
 	}
+	defer s.store.releaseWorkspace(ws)
 	height, err := strToId(vars["height"])
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -344,7 +349,7 @@ func (s *server) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	count := wireToInt64(countBin)
-	err = ws.Update(func(tx *bolt.Tx) error {
+	err = ws.DB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("updates"))
 		if b == nil {
 			return errors.New("missing bucket 'updates'")
