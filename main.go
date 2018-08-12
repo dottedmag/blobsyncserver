@@ -12,9 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
@@ -26,26 +24,24 @@ import (
 )
 
 type server struct {
-	rootDir    string
-	store      *Store
-	workspaces map[string]*bolt.DB
-	mutex      sync.Mutex
-	dev        bool
+	store *Store
+	dev   bool
 }
 
 func main() {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Ltime)
 
-	srv := &server{workspaces: map[string]*bolt.DB{}}
+	srv := &server{}
 
 	var port int
+	var rootDir string
 	flag.IntVar(&port, "port", 3003, "TCP port to listen on")
-	flag.StringVar(&srv.rootDir, "db", "/tmp/blobsyncserver", "Database root folder")
+	flag.StringVar(&rootDir, "db", "/tmp/blobsyncserver", "Database root folder")
 	flag.BoolVar(&srv.dev, "dev", false, "Run in development mode")
 	flag.Parse()
 
-	srv.store = OpenStore(srv.rootDir)
+	srv.store = OpenStore(rootDir)
 
 	shutdownChannel := make(chan bool)
 	stopChannel := make(chan os.Signal, 1)
@@ -89,7 +85,7 @@ func main() {
 		shutdownChannel <- true
 	}()
 
-	log.Printf("Sync server starting on port %d with database at %s\n", port, srv.rootDir)
+	log.Printf("Sync server starting on port %d with database at %s\n", port, srv.store.rootDir)
 	err := httpSrv.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {
 		log.Printf("failure starting HTTP server: %s\n", err)
@@ -108,40 +104,6 @@ func setupMiddleware(h http.Handler, dev bool) http.Handler {
 		h = logger.Handler(h, os.Stderr, logger.TinyLoggerType)
 	}
 	return h
-}
-
-func openWorkspace(server *server, id string) (*bolt.DB, error) {
-	server.mutex.Lock()
-	defer server.mutex.Unlock()
-
-	ws := server.workspaces[id]
-	if ws != nil {
-		return ws, nil
-	}
-
-	err := os.MkdirAll(server.rootDir, 0700)
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to create directory for workspaces")
-	}
-
-	db, err := bolt.Open(filepath.Join(server.rootDir, id+".db"), 0600, &bolt.Options{Timeout: time.Millisecond})
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to create workspace database")
-	}
-
-	err = db.Update(func(tx *bolt.Tx) error {
-		_, err = tx.CreateBucketIfNotExists([]byte("updates"))
-		if err != nil {
-			return errors.Wrap(err, "unable to create bucket 'updates'")
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to create top-level bucket")
-	}
-
-	server.workspaces[id] = db
-	return db, nil
 }
 
 func int64ToWire(id int64) []byte {
@@ -209,7 +171,7 @@ func readUpdates2(b *bolt.Bucket, from int64) updates {
 
 func (s *server) get2(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ws, err := openWorkspace(s, vars["id"])
+	ws, err := s.store.openWorkspace(vars["id"])
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		// FIXME (dottedmag) do not show internals once in production
@@ -251,7 +213,7 @@ func (s *server) get2(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) get(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ws, err := openWorkspace(s, vars["id"])
+	ws, err := s.store.openWorkspace(vars["id"])
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		// FIXME (dottedmag) do not show internals once in production
@@ -322,7 +284,7 @@ func nextKey(b *bolt.Bucket) int64 {
 
 func (s *server) post2(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ws, err := openWorkspace(s, vars["id"])
+	ws, err := s.store.openWorkspace(vars["id"])
 	if err != nil {
 		s.sendError(w, err)
 		return
@@ -365,7 +327,7 @@ func (s *server) post2(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) post(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	ws, err := openWorkspace(s, vars["id"])
+	ws, err := s.store.openWorkspace(vars["id"])
 	if err != nil {
 		s.sendError(w, err)
 		return
