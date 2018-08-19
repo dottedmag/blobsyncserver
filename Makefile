@@ -1,19 +1,31 @@
-.PHONY: release
+.PHONY: help
+.PHONY: reconfigure
+.PHONY: deploy
+.PHONY: logs
 
+# -- configuration -------------------------------------------------------------
+server=h2
+
+# ------------------------------------------------------------------------------
 help:
+	@echo "make initial-setup     deploy & reconfigure"
 	@echo "make reconfigure       reconfigure server using files under _deploy/"
 	@echo "make deploy            build & deploy the production server"
 	@echo "make logs              follow the logs of the production server"
 
+
+# -- server deployment ----------------------------------------------------------
+
+initial-setup: reconfigure deploy
+
 reconfigure:
-	scp _deploy/wondertaskserver.service _deploy/wondertaskserver.install.sh 'h2:~/'
-	ssh h2 'bash ~/wondertaskserver.install.sh'
+	scp _deploy/wondertasks.sh 'h2:~/'
+	ssh $(server) 'bash ~/wondertasks.sh --reconfigure'
 
 deploy:
-	mkdir -p /tmp/blobsyncserver-build-linux
-	GOOS=linux GOARCH=amd64 go build -o /tmp/blobsyncserver-build-linux/wondertaskserver
-	scp /tmp/blobsyncserver-build-linux/wondertaskserver 'h2:~/'
-	ssh h2 'sudo install -m755 -gandreyvit -oandreyvit -p ~/wondertaskserver /usr/local/bin && sudo systemctl restart wondertaskserver'
+	GOOS=linux GOARCH=amd64 go build -o /tmp/wondertasks-linux-amd64
+	scp /tmp/wondertasks-linux-amd64 _deploy/wondertasks.sh '$(server):~/'
+	ssh $(server) 'bash ~/wondertasks.sh --deploy'
 
 logs:
-	ssh h2 'sudo journalctl -f -u wondertaskserver'
+	ssh $(server) 'sudo journalctl -f -u wondertasks'
