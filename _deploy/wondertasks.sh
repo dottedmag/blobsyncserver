@@ -38,7 +38,7 @@ User=$username
 Restart=always
 PIDFile=/var/run/wondertasks.pid
 Type=simple
-ExecStart=/srv/wondertasks/bin/wondertasks -dev -port $internal_http_port -db /srv/wondertasks/db
+ExecStart=/srv/wondertasks/bin/wondertasks -dev -addr localhost:$internal_http_port -db /srv/wondertasks/db
 KillMode=process
 
 [Install]
