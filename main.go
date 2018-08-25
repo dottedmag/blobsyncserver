@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -34,9 +33,9 @@ func main() {
 
 	srv := &server{}
 
-	var port int
+	var addr string
 	var rootDir string
-	flag.IntVar(&port, "port", 3003, "TCP port to listen on")
+	flag.StringVar(&addr, "addr", ":3003", "TCP host/port to listen on")
 	flag.StringVar(&rootDir, "db", "/tmp/blobsyncserver", "Database root folder")
 	flag.BoolVar(&srv.dev, "dev", false, "Run in development mode")
 	flag.Parse()
@@ -64,7 +63,7 @@ func main() {
 		Queries("from", "{height:[0-9]+}")
 
 	httpSrv := &http.Server{
-		Addr:    net.JoinHostPort("", strconv.Itoa(port)),
+		Addr:    addr,
 		Handler: setupMiddleware(r, srv.dev),
 	}
 
@@ -87,7 +86,7 @@ func main() {
 		shutdownChannel <- true
 	}()
 
-	log.Printf("Sync server starting on port %d with database at %s\n", port, srv.store.rootDir)
+	log.Printf("Sync server starting on address %s with database at %s\n", addr, srv.store.rootDir)
 	err := httpSrv.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {
 		log.Printf("failure starting HTTP server: %s\n", err)
