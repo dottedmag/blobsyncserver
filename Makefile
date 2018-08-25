@@ -19,7 +19,7 @@ help:
 initial-setup: reconfigure deploy
 
 reconfigure:
-	scp _deploy/wondertasks.sh 'h2:~/'
+	scp _deploy/wondertasks.sh '$(server):~/'
 	ssh $(server) 'bash ~/wondertasks.sh --reconfigure'
 
 deploy:
